@@ -1,1 +1,127 @@
-fastest-dns
+#!/usr/bin/python3
+import re
+import sys
+import subprocess
+import operator
+import socket
+from getpass import getuser
+
+class Parser( object ):
+	def __init__( self, resolvconf = '/etc/resolv.conf' ):
+		self.resolvconf_file = resolvconf
+		# Open and read /etc/resolv.conf
+		try:
+			with open( resolvconf, 'r' ) as res:
+				self.resolvconf = res.read()
+		except IOError as e:
+			print( 'Unable to open {0}: {1}'.format( resolvconf, e.args[ 1 ] ) )
+			sys.exit( 1 )
+
+		# Start parsing resolv.conf
+		self.servers = self._parse()
+
+	def write( self ):
+		"""This writes back Parser.servers into resolv.conf"""
+
+		# If self.servers is valid
+		if( self.servers ):
+			# Loop through servers, ofcourse Python turned it upside down. I need it back in order, I used reversed()
+			for server in reversed( self.servers ):
+				# Compile regex to fetch the line where the server exists in resolv.conf
+				com = re.compile( r'nameserver.({0})'.format( re.escape( server ) ) )
+				# Remove the existing line so we could append it to the top
+				self.resolvconf = com.sub( '', self.resolvconf ).strip()
+				# Append it to the top 
+				self.resolvconf = 'nameserver {0}\n'.format( server ) + self.resolvconf
+			try:
+				# Open the resolv.conf for writing, pour back whats in self.resolvconf back in
+				with open( self.resolvconf_file, 'w' ) as resolvconf:
+					resolvconf.write( self.resolvconf )
+			except IOError as e:
+				print( 'Error writing to {2}: {1}: {0}'.format( e.args[ 0 ], e.args[ 1 ], self.resolvconf_file ) ) 
+
+	def _parse( self ):
+		""" This method parses the /etc/resolv.conf content to fetch out existing nameservers and return a list of it"""
+		# Compile regex for getting nameservers
+		com = re.compile( r'nameserver.*' )
+		# Find all nameservers
+		found = com.findall( self.resolvconf )
+		servers = list()
+		# Split the nameserver xx.xx.xx.xx to get the IP only
+		for server in found:
+			_, s = server.split( ' ' )
+			if s:
+				servers.append( s )
+		return servers
+
+
+class DNSPinger( Parser ):
+	def __init__( self, domain = 'google.com', ignore_localhost = False ):
+		""" This module pings each server listed in self.servers, extends the Parser module """
+		from platform import system
+		# Confirm this is a Linux PC
+		if system() != 'Linux':
+			print( 'This package runs on Linux only!' )
+			sys.exit( 1 )
+		# Confirm he is root!
+		if getuser() != 'root':
+			print( 'Run as root' )
+			sys.exit( 1 )
+		# Run the __init__ of the parent module
+		super( self.__class__, self ).__init__()
+
+		self.domain = domain
+		self.ignore_localhost = ignore_localhost
+		# self.servers must be list type
+		if not isinstance( self.servers, list ):
+			raise ValueError( 'List type needed' )
+
+	def ping( self ):
+		""" This pings each of the servers using dig package and returns time taken for each server """
+		from time import sleep 
+
+		result = dict()
+		print( 'Checking fastest DNS Servers...' )
+		print( self.servers )
+		sleep( 1 )
+		# Loop in each server and run tests on them
+		for server in self.servers:
+			# if user disables checking of localhost, do the thing!
+			if( self.ignore_localhost and server == '127.0.0.1' or self.ignore_localhost and server == socket.gethostbyname( socket.getfqdn() ) ):
+				pass
+			else:
+				# Compile regex for finding total time
+				time_com = re.compile( r'[\d].*msec' )
+				print( 'Checking server - {0}'.format( server ) )
+				# Run CMD package to check DNS servers
+				ping = subprocess.Popen( [ '/usr/bin/dig', '@{0}'.format( server ), self.domain, 'A', '+noall', '+nofail', '+stats' ], stdout = subprocess.PIPE )
+				ping_result = ping.communicate()[ 0 ].decode( 'utf-8' )
+				total_time = time_com.findall( ping_result )
+				# Not all DNS works, so we make sure it finds total time taken
+				if total_time:
+					# Remove msec and make time an integer
+					total_time = int( total_time[0].replace( ' msec', '' ) )
+					# In the result, make server addres the key and value is the time
+					result[ server ] = total_time
+					print( 'Server {0} took {1}msec to resolve {2}\n'.format( server, total_time, self.domain ) )
+				else:
+					print( 'Server {0} failed: Timed Out in resolving {1}\n'.format( server, self.domain ) )
+					# When DNS server doesn't respond, assign a time of 10000 to it
+					result[ server ] = 100000
+		# Sort DNS servers by their respond time 
+		arranged_servers = sorted( result.items(), key = operator.itemgetter( 1 ) )
+		serve = list()
+		# Append all DNS to a list
+		for servers, time in arranged_servers:
+			serve.append( servers )
+		self.servers = serve
+
+if __name__ == '__main__':
+	import argparse
+	parser = argparse.ArgumentParser( description = 'FastestDNS is a tool that reads nameservers in /etc/resolv.conf and rearrange them base on their response time. For faster resolving and browsing...' )
+	parser.add_argument( '-i', '--ignore-localhost', dest = 'ignore', type = bool, default = False, help = 'Pass the parameter to ignore local DNS server in /etc/resolv.conf' )
+	parser.add_argument( '-d', '--domain', dest = 'domain', default = 'google.com', help = 'Domain name to run test with' )
+	args = parser.parse_args()
+	main = DNSPinger( args.domain, args.ignore )
+	main.ping()
+	main.write()
