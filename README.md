@@ -31,3 +31,4 @@ Provide a custom domain name to test servers with (default is google.com)
 ```sh
 $ sudo ./fastest-dns -d facebook.com 
 ```
+You can also set up a cron job to be doing this for you
